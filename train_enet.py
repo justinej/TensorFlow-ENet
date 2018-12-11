@@ -21,7 +21,7 @@ flags.DEFINE_boolean('combine_dataset', False, 'If True, combines the validation
 
 #Training arguments
 flags.DEFINE_integer('num_classes', 12, 'The number of classes to predict.')
-flags.DEFINE_integer('batch_size', 10, 'The batch_size for training.')
+flags.DEFINE_integer('batch_size', 2, 'The batch_size for training.')
 flags.DEFINE_integer('eval_batch_size', 25, 'The batch size used for validation.')
 flags.DEFINE_integer('image_height', 360, "The input height of the images.")
 flags.DEFINE_integer('image_width', 480, "The input width of the images.")
@@ -92,12 +92,12 @@ decay_steps = int(num_epochs_before_decay * num_steps_per_epoch)
 #Median frequency balancing class_weights
 if weighting == "MFB":
     class_weights = median_frequency_balancing()
-    print "========= Median Frequency Balancing Class Weights =========\n", class_weights
+    print("========= Median Frequency Balancing Class Weights =========\n" + str(class_weights))
 
 #Inverse weighing probability class weights
 elif weighting == "ENET":
     class_weights = ENet_weighing()
-    print "========= ENet Class Weights =========\n", class_weights
+    print("========= ENet Class Weights =========\n" + str(class_weights))
 
 #============= TRAINING =================
 def weighted_cross_entropy(onehot_labels, logits, class_weights):
@@ -159,7 +159,8 @@ def run():
                                          reuse=None,
                                          num_initial_blocks=num_initial_blocks,
                                          stage_two_repeat=stage_two_repeat,
-                                         skip_connections=skip_connections)
+                                         skip_connections=skip_connections,
+                                         identity_res=True)
 
         #perform one-hot-encoding on the ground truth annotation to get same shape as the logits
         annotations = tf.reshape(annotations, shape=[batch_size, image_height, image_width])
@@ -231,7 +232,8 @@ def run():
                                                  reuse=True,
                                                  num_initial_blocks=num_initial_blocks,
                                                  stage_two_repeat=stage_two_repeat,
-                                                 skip_connections=skip_connections)
+                                                 skip_connections=skip_connections,
+                                                 identity_res=True)
 
         #perform one-hot-encoding on the ground truth annotation to get same shape as the logits
         annotations_val = tf.reshape(annotations_val, shape=[eval_batch_size, image_height, image_width])
@@ -281,10 +283,10 @@ def run():
 
         # Run the managed session
         with sv.managed_session() as sess:
-            for step in xrange(int(num_steps_per_epoch * num_epochs)):
+            for step in range(int(num_steps_per_epoch * num_epochs)):
                 #At the start of every epoch, show the vital information:
                 if step % num_batches_per_epoch == 0:
-                    logging.info('Epoch %s/%s', step/num_batches_per_epoch + 1, num_epochs)
+                    logging.info('Epoch %s/%s', step//num_batches_per_epoch + 1, num_epochs)
                     learning_rate_value = sess.run([lr])
                     logging.info('Current Learning Rate: %s', learning_rate_value)
 
@@ -293,8 +295,8 @@ def run():
                     loss, training_accuracy, training_mean_IOU = train_step(sess, train_op, sv.global_step, metrics_op=metrics_op)
 
                     #Check the validation data only at every third of an epoch
-                    if step % (num_steps_per_epoch / 3) == 0:
-                        for i in xrange(len(image_val_files) / eval_batch_size):
+                    if step % (num_steps_per_epoch // 3) == 0:
+                        for i in range(len(image_val_files) // eval_batch_size):
                             validation_accuracy, validation_mean_IOU = eval_step(sess, metrics_op_val)
 
                     summaries = sess.run(my_summary_op)
@@ -323,7 +325,7 @@ def run():
                 logging.info('Saving the images now...')
                 predictions_value, annotations_value = sess.run([predictions_val, annotations_val])
 
-                for i in xrange(eval_batch_size):
+                for i in range(eval_batch_size):
                     predicted_annotation = predictions_value[i]
                     annotation = annotations_value[i]
 
