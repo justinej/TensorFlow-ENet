@@ -29,6 +29,9 @@ flags.DEFINE_integer('num_epochs', 10, "The number of epochs to evaluate your mo
 flags.DEFINE_integer('num_initial_blocks', 1, 'The number of initial blocks to use in ENet.')
 flags.DEFINE_integer('stage_two_repeat', 2, 'The number of times to repeat stage two.')
 flags.DEFINE_boolean('skip_connections', False, 'If True, perform skip connections from encoder to decoder.')
+flags.DEFINE_boolean('identity_res', False, 'If True, shuffle layers around to have a less obstructed residual module.')
+flags.DEFINE_string('shortcut_impedence', "", 'Empty string, conv, or dropout.')
+flags.DEFINE_string('activation_fn', "prelu", 'prelu or relu.')
 
 FLAGS = flags.FLAGS
 
@@ -45,6 +48,9 @@ save_images = FLAGS.save_images
 num_initial_blocks = FLAGS.num_initial_blocks
 stage_two_repeat = FLAGS.stage_two_repeat
 skip_connections = FLAGS.skip_connections
+identity_res = FLAGS.identity_res
+shortcut_impedence = FLAGS.shortcut_impedence
+activation_fn = FLAGS.activation_fn
 
 dataset_dir = FLAGS.dataset_dir
 checkpoint_dir = FLAGS.checkpoint_dir
@@ -92,7 +98,10 @@ def run():
                                          reuse=None,
                                          num_initial_blocks=num_initial_blocks,
                                          stage_two_repeat=stage_two_repeat,
-                                         skip_connections=skip_connections)
+                                         skip_connections=skip_connections,
+                                         identity_res=identity_res,
+                                         activation_fn=activation_fn,
+                                         shortcut_impedence=shortcut_impedence)
 
         # Set up the variables to restore and restoring function from a saver.
         exclude = []
@@ -128,10 +137,10 @@ def run():
             time_elapsed = time.time() - start_time
 
             #Log some information
-            logging.info('Global Step %s: Streaming Accuracy: %.4f     Streaming Mean IOU: %.4f     Per-class Accuracy: %.4f (%.2f sec/step)',
-                         global_step_count, accuracy_value, mean_IOU_value, per_class_accuracy_value, time_elapsed)
+            # logging.info('Global Step %s: Streaming Accuracy: %.4f     Streaming Mean IOU: %.4f     Per-class Accuracy: %.4f (%.2f sec/step)',
+                         # global_step_count, accuracy_value, mean_IOU_value, per_class_accuracy_value, time_elapsed)
 
-            return accuracy_value, mean_IOU_value, per_class_accuracy_value
+            return accuracy_value, mean_IOU_value, per_class_accuracy_value, time_elapsed
 
         #Create your summaries
         tf.summary.scalar('Monitor/test_accuracy', accuracy)
@@ -144,28 +153,32 @@ def run():
 
         #Run the managed session
         with sv.managed_session() as sess:
+            total_step_times = []
             for step in range(int(num_steps_per_epoch * num_epochs)):
                 #print vital information every start of the epoch as always
                 if step % num_batches_per_epoch == 0:
                     accuracy_value, mean_IOU_value = sess.run([accuracy, mean_IOU])
-                    logging.info('Epoch: %s/%s', step / num_batches_per_epoch + 1, num_epochs)
-                    logging.info('Current Streaming Accuracy: %.4f', accuracy_value)
-                    logging.info('Current Streaming Mean IOU: %.4f', mean_IOU_value)
+                    # logging.info('Epoch: %s/%s', step / num_batches_per_epoch + 1, num_epochs)
+                    # logging.info('Current Streaming Accuracy: %.4f', accuracy_value)
+                    # logging.info('Current Streaming Mean IOU: %.4f', mean_IOU_value)
                     
                 #Compute summaries every 10 steps and continue evaluating
                 if step % 10 == 0:
-                    test_accuracy, test_mean_IOU, test_per_class_accuracy = eval_step(sess, metrics_op = metrics_op, global_step = sv.global_step)
+                    test_accuracy, test_mean_IOU, test_per_class_accuracy, step_time = eval_step(sess, metrics_op = metrics_op, global_step = sv.global_step)
                     summaries = sess.run(my_summary_op)
                     sv.summary_computed(sess, summaries)
+                    total_step_times.append(step_time)
                     
                 #Otherwise just run as per normal
                 else:
-                    test_accuracy, test_mean_IOU, test_per_class_accuracy = eval_step(sess, metrics_op = metrics_op, global_step = sv.global_step)
+                    test_accuracy, test_mean_IOU, test_per_class_accuracy, step_time = eval_step(sess, metrics_op = metrics_op, global_step = sv.global_step)
+                    total_step_times.append(step_time)
 
             #At the end of all the evaluation, show the final accuracy
             logging.info('Final Streaming Accuracy: %.4f', test_accuracy)
             logging.info('Final Mean IOU: %.4f', test_mean_IOU)
             logging.info('Final Per Class Accuracy %.4f', test_per_class_accuracy)
+            logging.info('Average Step Time %.4f for %d', sum(total_step_times[1:])/(len(total_step_times)-1), len(total_step_times)-1)
 
             #Show end of evaluation
             logging.info('Finished evaluating!')

@@ -36,6 +36,10 @@ def prelu(x, scope, decoder=False):
     neg = alpha * (x - abs(x)) * 0.5
     return pos + neg
 
+@slim.add_arg_scope
+def relu(x, scope, decoder = False):
+    return tf.nn.relu(x, name=scope)
+
 def spatial_dropout(x, p, seed, scope, is_training=True):
     '''
     Performs a 2D spatial dropout that drops layers instead of individual elements in an input feature map.
@@ -154,6 +158,8 @@ def bottleneck(inputs,
                dilation_rate=None,
                asymmetric=False,
                decoder=False,
+               activation_fn=prelu,
+               shortcut_impedence=None,
                scope='bottleneck'):
     '''
     The bottleneck module has three different kinds of variants:
@@ -187,10 +193,19 @@ def bottleneck(inputs,
     - inputs_shape(list): The shape of the input to the downsampling conv block. For use in unpooling later.
 
     '''
+    if not shortcut_impedence:
+        shortcut_impedence = lambda x, y: x # Identity operation
+    elif shortcut_impedence == "conv":
+        shortcut_impedence = lambda x, y: slim.conv2d(x, x.get_shape().as_list()[-1], [1, 1], stride=1, scope=y)
+    elif shortcut_impedence == "dropout":
+        shortcut_impedence = lambda x, y: spatial_dropout(x, p=regularizer_prob, seed=seed, scope=y)
+    else:
+        raise NameError("Shortcut impedence is not empty string, conv, or dropout.")
+
     #Calculate the depth reduction based on the projection ratio used in 1x1 convolution.
     reduced_depth = int(inputs.get_shape().as_list()[3] / projection_ratio)
 
-    with slim.arg_scope([prelu], decoder=decoder):
+    with slim.arg_scope([activation_fn], decoder=decoder):
 
         #=============DOWNSAMPLING BOTTLENECK====================
         if downsampling:
@@ -207,29 +222,30 @@ def bottleneck(inputs,
             depth_to_pad = abs(inputs_shape[3] - output_depth)
             paddings = tf.convert_to_tensor([[0,0], [0,0], [0,0], [0, depth_to_pad]])
             net_main = tf.pad(net_main, paddings=paddings, name=scope+'_main_padding')
+            net_main = shortcut_impedence(net_main, scope+'_impedence0')
 
             #=============SUB BRANCH==============
             #First projection that has a 2x2 kernel and stride 2
             net = slim.conv2d(inputs, reduced_depth, [2,2], stride=2, scope=scope+'_conv1')
             net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm1')
-            net = prelu(net, scope=scope+'_prelu1')
+            net = activation_fn(net, scope=scope+'_activation_fn1')
 
             #Second conv block
             net = slim.conv2d(net, reduced_depth, [filter_size, filter_size], scope=scope+'_conv2')
             net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm2')
-            net = prelu(net, scope=scope+'_prelu2')
+            net = activation_fn(net, scope=scope+'_activation_fn2')
 
             #Final projection with 1x1 kernel
             net = slim.conv2d(net, output_depth, [1,1], scope=scope+'_conv3')
             net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm3')
-            net = prelu(net, scope=scope+'_prelu3')
+            net = activation_fn(net, scope=scope+'_activation_fn3')
 
             #Regularizer
             net = spatial_dropout(net, p=regularizer_prob, seed=seed, scope=scope+'_spatial_dropout')
 
             #Finally, combine the two branches together via an element-wise addition
             net = tf.add(net, net_main, name=scope+'_add')
-            net = prelu(net, scope=scope+'_last_prelu')
+            net = activation_fn(net, scope=scope+'_last_activation_fn')
 
             #also return inputs shape for convenience later
             return net, pooling_indices, inputs_shape
@@ -242,30 +258,30 @@ def bottleneck(inputs,
                 raise ValueError('Dilation rate is not given.')
 
             #Save the main branch for addition later
-            net_main = inputs
+            net_main = shortcut_impedence(inputs, scope+'_impedence0')
 
             #First projection with 1x1 kernel (dimensionality reduction)
             net = slim.conv2d(inputs, reduced_depth, [1,1], scope=scope+'_conv1')
             net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm1')
-            net = prelu(net, scope=scope+'_prelu1')
+            net = activation_fn(net, scope=scope+'_activation_fn1')
 
             #Second conv block --- apply dilated convolution here
             net = slim.conv2d(net, reduced_depth, [filter_size, filter_size], rate=dilation_rate, scope=scope+'_dilated_conv2')
             net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm2')
-            net = prelu(net, scope=scope+'_prelu2')
+            net = activation_fn(net, scope=scope+'_activation_fn2')
 
             #Final projection with 1x1 kernel (Expansion)
             net = slim.conv2d(net, output_depth, [1,1], scope=scope+'_conv3')
             net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm3')
-            net = prelu(net, scope=scope+'_prelu3')
+            net = activation_fn(net, scope=scope+'_activation_fn3')
 
             #Regularizer
             net = spatial_dropout(net, p=regularizer_prob, seed=seed, scope=scope+'_spatial_dropout')
-            net = prelu(net, scope=scope+'_prelu4')
+            net = activation_fn(net, scope=scope+'_activation_fn4')
 
             #Add the main branch
             net = tf.add(net_main, net, name=scope+'_add_dilated')
-            net = prelu(net, scope=scope+'_last_prelu')
+            net = activation_fn(net, scope=scope+'_last_activation_fn')
 
             return net
 
@@ -273,31 +289,31 @@ def bottleneck(inputs,
         #Everything is the same as a regular bottleneck except for a [5,5] kernel decomposed into two [5,1] then [1,5]
         elif asymmetric:
             #Save the main branch for addition later
-            net_main = inputs
+            net_main = shortcut_impedence(inputs, scope+'_impedence0')
 
             #First projection with 1x1 kernel (dimensionality reduction)
             net = slim.conv2d(inputs, reduced_depth, [1,1], scope=scope+'_conv1')
             net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm1')
-            net = prelu(net, scope=scope+'_prelu1')
+            net = activation_fn(net, scope=scope+'_activation_fn1')
 
             #Second conv block --- apply asymmetric conv here
             net = slim.conv2d(net, reduced_depth, [filter_size, 1], scope=scope+'_asymmetric_conv2a')
             net = slim.conv2d(net, reduced_depth, [1, filter_size], scope=scope+'_asymmetric_conv2b')
             net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm2')
-            net = prelu(net, scope=scope+'_prelu2')
+            net = activation_fn(net, scope=scope+'_activation_fn2')
 
             #Final projection with 1x1 kernel
             net = slim.conv2d(net, output_depth, [1,1], scope=scope+'_conv3')
             net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm3')
-            net = prelu(net, scope=scope+'_prelu3')
+            net = activation_fn(net, scope=scope+'_activation_fn3')
 
             #Regularizer
             net = spatial_dropout(net, p=regularizer_prob, seed=seed, scope=scope+'_spatial_dropout')
-            net = prelu(net, scope=scope+'_prelu4')
+            net = activation_fn(net, scope=scope+'_activation_fn4')
 
             #Add the main branch
             net = tf.add(net_main, net, name=scope+'_add_asymmetric')
-            net = prelu(net, scope=scope+'_last_prelu')
+            net = activation_fn(net, scope=scope+'_last_activation_fn')
 
             return net
 
@@ -319,12 +335,13 @@ def bottleneck(inputs,
             net_unpool = slim.conv2d(inputs, output_depth, [1,1], scope=scope+'_main_conv1')
             net_unpool = slim.batch_norm(net_unpool, is_training=is_training, scope=scope+'batch_norm1')
             net_unpool = unpool(net_unpool, pooling_indices, output_shape=output_shape, scope='unpool')
+            net_unpool = shortcut_impedence(net_unpool, scope+'_impedence0')
 
             #======SUB BRANCH=======
             #First 1x1 projection to reduce depth
             net = slim.conv2d(inputs, reduced_depth, [1,1], scope=scope+'_conv1')
             net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm2')
-            net = prelu(net, scope=scope+'_prelu1')
+            net = activation_fn(net, scope=scope+'_activation_fn1')
 
             #Second conv block -----------------------------> NOTE: using tf.nn.conv2d_transpose for variable input shape.
             net_unpool_shape = net_unpool.get_shape().as_list()
@@ -336,50 +353,50 @@ def bottleneck(inputs,
             # net = slim.conv2d_transpose(net, reduced_depth, [filter_size, filter_size], stride=2, scope=scope+'_transposed_conv2')
             net = tf.nn.conv2d_transpose(net, filter=filters, strides=[1,2,2,1], output_shape=output_shape, name=scope+'_transposed_conv2')
             net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm3')
-            net = prelu(net, scope=scope+'_prelu2')
+            net = activation_fn(net, scope=scope+'_activation_fn2')
 
             #Final projection with 1x1 kernel
             net = slim.conv2d(net, output_depth, [1,1], scope=scope+'_conv3')
             net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm4')
-            net = prelu(net, scope=scope+'_prelu3')
+            net = activation_fn(net, scope=scope+'_activation_fn3')
 
             #Regularizer
             net = spatial_dropout(net, p=regularizer_prob, seed=seed, scope=scope+'_spatial_dropout')
-            net = prelu(net, scope=scope+'_prelu4')
+            net = activation_fn(net, scope=scope+'_activation_fn4')
 
             #Finally, add the unpooling layer and the sub branch together
             net = tf.add(net, net_unpool, name=scope+'_add_upsample')
-            net = prelu(net, scope=scope+'_last_prelu')
+            net = activation_fn(net, scope=scope+'_last_activation_fn')
 
             return net
 
         #OTHERWISE, just perform a regular bottleneck!
         #==============REGULAR BOTTLENECK==================
         #Save the main branch for addition later
-        net_main = inputs
+        net_main = shortcut_impedence(inputs, scope+'_impedence0')
 
         #First projection with 1x1 kernel
         net = slim.conv2d(inputs, reduced_depth, [1,1], scope=scope+'_conv1')
         net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm1')
-        net = prelu(net, scope=scope+'_prelu1')
+        net = activation_fn(net, scope=scope+'_activation_fn1')
 
         #Second conv block
         net = slim.conv2d(net, reduced_depth, [filter_size, filter_size], scope=scope+'_conv2')
         net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm2')
-        net = prelu(net, scope=scope+'_prelu2')
+        net = activation_fn(net, scope=scope+'_activation_fn2')
 
         #Final projection with 1x1 kernel
         net = slim.conv2d(net, output_depth, [1,1], scope=scope+'_conv3')
         net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm3')
-        net = prelu(net, scope=scope+'_prelu3')
+        net = activation_fn(net, scope=scope+'_activation_fn3')
 
         #Regularizer
         net = spatial_dropout(net, p=regularizer_prob, seed=seed, scope=scope+'_spatial_dropout')
-        net = prelu(net, scope=scope+'_prelu4')
+        net = activation_fn(net, scope=scope+'_activation_fn4')
 
         #Add the main branch
         net = tf.add(net_main, net, name=scope+'_add_regular')
-        net = prelu(net, scope=scope+'_last_prelu')
+        net = activation_fn(net, scope=scope+'_last_activation_fn')
 
         return net
 
@@ -400,6 +417,8 @@ def bottleneck_identity_res(inputs,
                dilation_rate=None,
                asymmetric=False,
                decoder=False,
+               activation_fn=prelu,
+               shortcut_impedence=None,
                scope='bottleneck'):
     '''
     The bottleneck module except with modifications to the residual module.
@@ -432,10 +451,19 @@ def bottleneck_identity_res(inputs,
     - inputs_shape(list): The shape of the input to the downsampling conv block. For use in unpooling later.
 
     '''
+    if not shortcut_impedence:
+        shortcut_impedence = lambda x, y: x # Identity operation
+    elif shortcut_impedence == "conv":
+        shortcut_impedence = lambda x, y: slim.conv2d(x, x.get_shape().as_list()[-1], [1, 1], stride=1, scope=y)
+    elif shortcut_impedence == "dropout":
+        shortcut_impedence = lambda x, y: spatial_dropout(x, p=regularizer_prob, seed=seed, scope=y)
+    else:
+        raise NameError("Shortcut impedence is not empty string, conv, or dropout.")
+
     #Calculate the depth reduction based on the projection ratio used in 1x1 convolution.
     reduced_depth = int(inputs.get_shape().as_list()[3] / projection_ratio)
 
-    with slim.arg_scope([prelu], decoder=decoder):
+    with slim.arg_scope([activation_fn], decoder=decoder):
 
         #=============DOWNSAMPLING BOTTLENECK====================
         if downsampling:
@@ -452,21 +480,22 @@ def bottleneck_identity_res(inputs,
             depth_to_pad = abs(inputs_shape[3] - output_depth)
             paddings = tf.convert_to_tensor([[0,0], [0,0], [0,0], [0, depth_to_pad]])
             net_main = tf.pad(net_main, paddings=paddings, name=scope+'_main_padding')
+            net_main = shortcut_impedence(net_main, scope+'_impedence0')
 
             #=============SUB BRANCH==============
             #First projection that has a 2x2 kernel and stride 2
             net = slim.batch_norm(inputs, is_training=is_training, scope=scope+'_batch_norm1')
-            net = prelu(net, scope=scope+'_prelu1')
+            net = activation_fn(net, scope=scope+'_activation_fn1')
             net = slim.conv2d(net, reduced_depth, [2,2], stride=2, scope=scope+'_conv1')
 
             #Second conv block
             net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm2')
-            net = prelu(net, scope=scope+'_prelu2')
+            net = activation_fn(net, scope=scope+'_activation_fn2')
             net = slim.conv2d(net, reduced_depth, [filter_size, filter_size], scope=scope+'_conv2')
 
             #Final projection with 1x1 kernel
             net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm3')
-            net = prelu(net, scope=scope+'_prelu3')
+            net = activation_fn(net, scope=scope+'_activation_fn3')
             net = slim.conv2d(net, output_depth, [1,1], scope=scope+'_conv3')
 
             #Regularizer
@@ -486,21 +515,21 @@ def bottleneck_identity_res(inputs,
                 raise ValueError('Dilation rate is not given.')
 
             #Save the main branch for addition later
-            net_main = inputs
+            net_main = shortcut_impedence(inputs, scope+'_impedence0')
 
             #First projection with 1x1 kernel (dimensionality reduction)
             net = slim.batch_norm(inputs, is_training=is_training, scope=scope+'_batch_norm1')
-            net = prelu(net, scope=scope+'_prelu1')
+            net = activation_fn(net, scope=scope+'_activation_fn1')
             net = slim.conv2d(net, reduced_depth, [1,1], scope=scope+'_conv1')
 
             #Second conv block --- apply dilated convolution here
             net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm2')
-            net = prelu(net, scope=scope+'_prelu2')
+            net = activation_fn(net, scope=scope+'_activation_fn2')
             net = slim.conv2d(net, reduced_depth, [filter_size, filter_size], rate=dilation_rate, scope=scope+'_dilated_conv2')
 
             #Final projection with 1x1 kernel (Expansion)
             net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm3')
-            net = prelu(net, scope=scope+'_prelu3')
+            net = activation_fn(net, scope=scope+'_activation_fn3')
             net = slim.conv2d(net, output_depth, [1,1], scope=scope+'_conv3')
 
             #Regularizer
@@ -515,22 +544,22 @@ def bottleneck_identity_res(inputs,
         #Everything is the same as a regular bottleneck except for a [5,5] kernel decomposed into two [5,1] then [1,5]
         elif asymmetric:
             #Save the main branch for addition later
-            net_main = inputs
+            net_main = shortcut_impedence(inputs, scope+'_impedence0')
 
             #First projection with 1x1 kernel (dimensionality reduction)
             net = slim.batch_norm(inputs, is_training=is_training, scope=scope+'_batch_norm1')
-            net = prelu(net, scope=scope+'_prelu1')
+            net = activation_fn(net, scope=scope+'_activation_fn1')
             net = slim.conv2d(net, reduced_depth, [1,1], scope=scope+'_conv1')
 
             #Second conv block --- apply asymmetric conv here
             net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm2')
-            net = prelu(net, scope=scope+'_prelu2')
+            net = activation_fn(net, scope=scope+'_activation_fn2')
             net = slim.conv2d(net, reduced_depth, [filter_size, 1], scope=scope+'_asymmetric_conv2a')
             net = slim.conv2d(net, reduced_depth, [1, filter_size], scope=scope+'_asymmetric_conv2b')
 
             #Final projection with 1x1 kernel
             net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm3')
-            net = prelu(net, scope=scope+'_prelu3')
+            net = activation_fn(net, scope=scope+'_activation_fn3')
             net = slim.conv2d(net, output_depth, [1,1], scope=scope+'_conv3')
 
             #Regularizer
@@ -559,11 +588,12 @@ def bottleneck_identity_res(inputs,
             net_unpool = slim.batch_norm(inputs, is_training=is_training, scope=scope+'batch_norm1')
             net_unpool = slim.conv2d(net_unpool, output_depth, [1,1], scope=scope+'_main_conv1')
             net_unpool = unpool(net_unpool, pooling_indices, output_shape=output_shape, scope='unpool')
+            net_unpool = shortcut_impedence(net_unpool, scope+'_impedence0')
 
             #======SUB BRANCH=======
             #First 1x1 projection to reduce depth
             net = slim.batch_norm(inputs, is_training=is_training, scope=scope+'_batch_norm2')
-            net = prelu(net, scope=scope+'_prelu1')
+            net = activation_fn(net, scope=scope+'_activation_fn1')
             net = slim.conv2d(net, reduced_depth, [1,1], scope=scope+'_conv1')
 
             #Second conv block -----------------------------> NOTE: using tf.nn.conv2d_transpose for variable input shape.
@@ -575,12 +605,12 @@ def bottleneck_identity_res(inputs,
 
             # net = slim.conv2d_transpose(net, reduced_depth, [filter_size, filter_size], stride=2, scope=scope+'_transposed_conv2')
             net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm3')
-            net = prelu(net, scope=scope+'_prelu2')
+            net = activation_fn(net, scope=scope+'_activation_fn2')
             net = tf.nn.conv2d_transpose(net, filter=filters, strides=[1,2,2,1], output_shape=output_shape, name=scope+'_transposed_conv2')
 
             #Final projection with 1x1 kernel
             net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm4')
-            net = prelu(net, scope=scope+'_prelu3')
+            net = activation_fn(net, scope=scope+'_activation_fn3')
             net = slim.conv2d(net, output_depth, [1,1], scope=scope+'_conv3')
 
             #Regularizer
@@ -594,21 +624,21 @@ def bottleneck_identity_res(inputs,
         #OTHERWISE, just perform a regular bottleneck!
         #==============REGULAR BOTTLENECK==================
         #Save the main branch for addition later
-        net_main = inputs
+        net_main = shortcut_impedence(inputs, scope+'_impedence0')
 
         #First projection with 1x1 kernel
         net = slim.batch_norm(inputs, is_training=is_training, scope=scope+'_batch_norm1')
-        net = prelu(net, scope=scope+'_prelu1')
+        net = activation_fn(net, scope=scope+'_activation_fn1')
         net = slim.conv2d(net, reduced_depth, [1,1], scope=scope+'_conv1')
 
         #Second conv block
         net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm2')
-        net = prelu(net, scope=scope+'_prelu2')
+        net = activation_fn(net, scope=scope+'_activation_fn2')
         net = slim.conv2d(net, reduced_depth, [filter_size, filter_size], scope=scope+'_conv2')
 
         #Final projection with 1x1 kernel
         net = slim.batch_norm(net, is_training=is_training, scope=scope+'_batch_norm3')
-        net = prelu(net, scope=scope+'_prelu3')
+        net = activation_fn(net, scope=scope+'_activation_fn3')
         net = slim.conv2d(net, output_depth, [1,1], scope=scope+'_conv3')
 
         #Regularizer
@@ -629,6 +659,8 @@ def ENet(inputs,
          reuse=None,
          is_training=True,
          identity_res=False,
+         activation_fn="prelu",
+         shortcut_impedence=None,
          scope='ENet'):
     '''
     The ENet model for real-time semantic segmentation!
@@ -652,6 +684,13 @@ def ENet(inputs,
         module = bottleneck_identity_res
     else: module = bottleneck
 
+    if activation_fn == "prelu":
+        activation_fn = prelu
+    elif activation_fn == "relu":
+        activation_fn = relu
+    else:
+        raise NameError("Activation Function inputted to ENet is not 'prelu' or 'relu'\n")
+
     #Set the shape of the inputs first to get the batch_size information
     inputs_shape = inputs.get_shape().as_list()
     inputs.set_shape(shape=(batch_size, inputs_shape[1], inputs_shape[2], inputs_shape[3]))
@@ -671,11 +710,11 @@ def ENet(inputs,
                 net_one = net
 
             #===================STAGE ONE=======================
-            net, pooling_indices_1, inputs_shape_1 = module(net, output_depth=64, filter_size=3, regularizer_prob=0.01, downsampling=True, scope='module1_0')
-            net = module(net, output_depth=64, filter_size=3, regularizer_prob=0.01, scope='module1_1')
-            net = module(net, output_depth=64, filter_size=3, regularizer_prob=0.01, scope='module1_2')
-            net = module(net, output_depth=64, filter_size=3, regularizer_prob=0.01, scope='module1_3')
-            net = module(net, output_depth=64, filter_size=3, regularizer_prob=0.01, scope='module1_4')
+            net, pooling_indices_1, inputs_shape_1 = module(net, output_depth=64, filter_size=3, regularizer_prob=0.01, downsampling=True, activation_fn=activation_fn, shortcut_impedence=shortcut_impedence, scope='module1_0')
+            net = module(net, output_depth=64, filter_size=3, regularizer_prob=0.01, activation_fn=activation_fn, shortcut_impedence=shortcut_impedence, scope='module1_1')
+            net = module(net, output_depth=64, filter_size=3, regularizer_prob=0.01, activation_fn=activation_fn, shortcut_impedence=shortcut_impedence, scope='module1_2')
+            net = module(net, output_depth=64, filter_size=3, regularizer_prob=0.01, activation_fn=activation_fn, shortcut_impedence=shortcut_impedence, scope='module1_3')
+            net = module(net, output_depth=64, filter_size=3, regularizer_prob=0.01, activation_fn=activation_fn, shortcut_impedence=shortcut_impedence, scope='module1_4')
 
             #Save for skip connection later
             if skip_connections:
@@ -683,18 +722,18 @@ def ENet(inputs,
 
             #regularization prob is 0.1 from bottleneck 2.0 onwards
             with slim.arg_scope([module], regularizer_prob=0.1):
-                net, pooling_indices_2, inputs_shape_2 = module(net, output_depth=128, filter_size=3, downsampling=True, scope='module2_0')
+                net, pooling_indices_2, inputs_shape_2 = module(net, output_depth=128, filter_size=3, downsampling=True, activation_fn=activation_fn, shortcut_impedence=shortcut_impedence, scope='module2_0')
                 
                 #Repeat the stage two at least twice to get stage 2 and 3:
                 for i in range(2, max(stage_two_repeat, 2) + 2):
-                    net = module(net, output_depth=128, filter_size=3, scope='module'+str(i)+'_1')
-                    net = module(net, output_depth=128, filter_size=3, dilated=True, dilation_rate=2, scope='module'+str(i)+'_2')
-                    net = module(net, output_depth=128, filter_size=5, asymmetric=True, scope='module'+str(i)+'_3')
-                    net = module(net, output_depth=128, filter_size=3, dilated=True, dilation_rate=4, scope='module'+str(i)+'_4')
-                    net = module(net, output_depth=128, filter_size=3, scope='module'+str(i)+'_5')
-                    net = module(net, output_depth=128, filter_size=3, dilated=True, dilation_rate=8, scope='module'+str(i)+'_6')
-                    net = module(net, output_depth=128, filter_size=5, asymmetric=True, scope='module'+str(i)+'_7')
-                    net = module(net, output_depth=128, filter_size=3, dilated=True, dilation_rate=16, scope='module'+str(i)+'_8')
+                    net = module(net, output_depth=128, filter_size=3, activation_fn=activation_fn, shortcut_impedence=shortcut_impedence, scope='module'+str(i)+'_1')
+                    net = module(net, output_depth=128, filter_size=3, dilated=True, dilation_rate=2, activation_fn=activation_fn, shortcut_impedence=shortcut_impedence, scope='module'+str(i)+'_2')
+                    net = module(net, output_depth=128, filter_size=5, asymmetric=True, activation_fn=activation_fn, shortcut_impedence=shortcut_impedence, scope='module'+str(i)+'_3')
+                    net = module(net, output_depth=128, filter_size=3, dilated=True, dilation_rate=4, activation_fn=activation_fn, shortcut_impedence=shortcut_impedence, scope='module'+str(i)+'_4')
+                    net = module(net, output_depth=128, filter_size=3, activation_fn=activation_fn, shortcut_impedence=shortcut_impedence, scope='module'+str(i)+'_5')
+                    net = module(net, output_depth=128, filter_size=3, dilated=True, dilation_rate=8, activation_fn=activation_fn, shortcut_impedence=shortcut_impedence, scope='module'+str(i)+'_6')
+                    net = module(net, output_depth=128, filter_size=5, asymmetric=True, activation_fn=activation_fn, shortcut_impedence=shortcut_impedence, scope='module'+str(i)+'_7')
+                    net = module(net, output_depth=128, filter_size=3, dilated=True, dilation_rate=16, activation_fn=activation_fn, shortcut_impedence=shortcut_impedence, scope='module'+str(i)+'_8')
 
             with slim.arg_scope([module], regularizer_prob=0.1, decoder=True):
                 #===================STAGE FOUR========================
@@ -702,26 +741,26 @@ def ENet(inputs,
 
                 #The decoder section, so start to upsample.
                 net = module(net, output_depth=64, filter_size=3, upsampling=True,
-                                 pooling_indices=pooling_indices_2, output_shape=inputs_shape_2, scope=module_scope_name+'_0')
+                                 pooling_indices=pooling_indices_2, output_shape=inputs_shape_2, activation_fn=activation_fn, shortcut_impedence=shortcut_impedence, scope=module_scope_name+'_0')
 
                 #Perform skip connections here
                 if skip_connections:
                     net = tf.add(net, net_two, name=module_scope_name+'_skip_connection')
 
-                net = module(net, output_depth=64, filter_size=3, scope=module_scope_name+'_1')
-                net = module(net, output_depth=64, filter_size=3, scope=module_scope_name+'_2')
+                net = module(net, output_depth=64, filter_size=3, activation_fn=activation_fn, shortcut_impedence=shortcut_impedence, scope=module_scope_name+'_1')
+                net = module(net, output_depth=64, filter_size=3, activation_fn=activation_fn, shortcut_impedence=shortcut_impedence, scope=module_scope_name+'_2')
 
                 #===================STAGE FIVE========================
                 module_scope_name = "module" + str(i + 2)
 
                 net = module(net, output_depth=16, filter_size=3, upsampling=True,
-                                 pooling_indices=pooling_indices_1, output_shape=inputs_shape_1, scope=module_scope_name+'_0')
+                                 pooling_indices=pooling_indices_1, output_shape=inputs_shape_1, activation_fn=activation_fn, shortcut_impedence=shortcut_impedence, scope=module_scope_name+'_0')
 
                 #perform skip connections here
                 if skip_connections:
                     net = tf.add(net, net_one, name=module_scope_name+'_skip_connection')
 
-                net = module(net, output_depth=16, filter_size=3, scope=module_scope_name+'_1')
+                net = module(net, output_depth=16, filter_size=3, activation_fn=activation_fn, shortcut_impedence=shortcut_impedence, scope=module_scope_name+'_1')
 
             #=============FINAL CONVOLUTION=============
             logits = slim.conv2d_transpose(net, num_classes, [2,2], stride=2, scope='fullconv')

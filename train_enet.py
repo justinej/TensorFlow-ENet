@@ -36,6 +36,9 @@ flags.DEFINE_string('weighting', "MFB", 'Choice of Median Frequency Balancing or
 flags.DEFINE_integer('num_initial_blocks', 1, 'The number of initial blocks to use in ENet.')
 flags.DEFINE_integer('stage_two_repeat', 2, 'The number of times to repeat stage two.')
 flags.DEFINE_boolean('skip_connections', False, 'If True, perform skip connections from encoder to decoder.')
+flags.DEFINE_boolean('identity_res', False, 'If True, shuffle layers around to have a less obstructed residual module.')
+flags.DEFINE_string('shortcut_impedence', "", 'Empty string, conv, or dropout.')
+flags.DEFINE_string('activation_fn', "prelu", 'prelu or relu.')
 
 FLAGS = flags.FLAGS
 
@@ -59,6 +62,9 @@ epsilon = 1e-8
 num_initial_blocks = FLAGS.num_initial_blocks
 stage_two_repeat = FLAGS.stage_two_repeat
 skip_connections = FLAGS.skip_connections
+identity_res = FLAGS.identity_res
+shortcut_impedence = FLAGS.shortcut_impedence
+activation_fn = FLAGS.activation_fn
 
 #Use median frequency balancing or not
 weighting = FLAGS.weighting
@@ -160,7 +166,9 @@ def run():
                                          num_initial_blocks=num_initial_blocks,
                                          stage_two_repeat=stage_two_repeat,
                                          skip_connections=skip_connections,
-                                         identity_res=True)
+                                         identity_res=identity_res,
+                                         activation_fn=activation_fn,
+                                         shortcut_impedence=shortcut_impedence)
 
         #perform one-hot-encoding on the ground truth annotation to get same shape as the logits
         annotations = tf.reshape(annotations, shape=[batch_size, image_height, image_width])
@@ -233,7 +241,9 @@ def run():
                                                  num_initial_blocks=num_initial_blocks,
                                                  stage_two_repeat=stage_two_repeat,
                                                  skip_connections=skip_connections,
-                                                 identity_res=True)
+                                                 identity_res=identity_res,
+                                                 activation_fn=activation_fn,
+                                                 shortcut_impedence=shortcut_impedence)
 
         #perform one-hot-encoding on the ground truth annotation to get same shape as the logits
         annotations_val = tf.reshape(annotations_val, shape=[eval_batch_size, image_height, image_width])
